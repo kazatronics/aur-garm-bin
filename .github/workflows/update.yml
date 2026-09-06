@@ -1,0 +1,94 @@
+name: Update AUR Package
+
+on:
+  push:
+    paths:
+      - 'PKGBUILD'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force update (skip version check)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for new release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST=$(gh release view --repo cloudbase/garm --json tagName -q .tagName)
+          LATEST="${LATEST#v}"
+          CURRENT=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::New release found: $LATEST (current: $CURRENT)"
+          else
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Already up to date: $CURRENT"
+          fi
+
+      # Only on a real version change: a forced run redeploys the current
+      # PKGBUILD as-is, so it must not clobber a hand-made pkgrel bump.
+      - name: Update PKGBUILD version
+        if: steps.check.outputs.update == 'true'
+        run: |
+          VERSION="${{ steps.check.outputs.latest }}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+      - name: Update checksums and generate .SRCINFO
+        if: steps.check.outputs.update == 'true' || inputs.force
+        uses: heyhusen/archlinux-package-action@v3.0.0
+        with:
+          path: .
+          updpkgsums: true
+          srcinfo: true
+          namcap: false
+          flags: ''
+
+      - name: Commit updated PKGBUILD to GitHub
+        if: steps.check.outputs.update == 'true' || inputs.force
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "::notice::No changes to commit"
+          else
+            git commit -m "chore: update to ${{ steps.check.outputs.latest }}"
+            git push
+          fi
+
+      - name: Deploy to AUR
+        if: steps.check.outputs.update == 'true' || inputs.force
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: garm-bin
+          pkgbuild: ./PKGBUILD
+          assets: |
+            garm-bin.install
+            garm.service
+            garm.sysusers
+            garm.tmpfiles
+            .gitignore
+          commit_username: ${{ vars.AUR_USERNAME }}
+          commit_email: ${{ vars.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ steps.check.outputs.latest }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+          allow_empty_commits: false
