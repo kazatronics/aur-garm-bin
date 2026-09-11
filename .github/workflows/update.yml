@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for new release
         id: check
@@ -64,7 +64,7 @@ jobs:
 
       - name: Update checksums and generate .SRCINFO
         if: steps.check.outputs.deploy == 'true'
-        uses: heyhusen/archlinux-package-action@v3.0.0
+        uses: heyhusen/archlinux-package-action@c9f94059ccbebe8710d31d582f33ef4e84fe575c # v3.0.0
         with:
           path: .
           updpkgsums: true
@@ -102,7 +102,7 @@ jobs:
 
       - name: Deploy to AUR
         if: steps.check.outputs.deploy == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        uses: KSXGitHub/github-actions-deploy-aur@2ac5a4c1d7035885d46b10e3193393be8460b6f1 # v4.1.1
         with:
           pkgname: garm-bin
           pkgbuild: ./PKGBUILD
