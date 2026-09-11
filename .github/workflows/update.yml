@@ -2,6 +2,8 @@ name: Update AUR Package
 
 on:
   push:
+    branches:
+      - master
     paths:
       - 'PKGBUILD'
   schedule:
@@ -41,9 +43,18 @@ jobs:
             echo "update=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Already up to date: $CURRENT"
           fi
+          # Deploy on a real version bump, a forced dispatch, or any manual
+          # push of PKGBUILD (a pkgrel repackage). The bot's own commits carry
+          # [skip ci], so they never re-trigger this workflow.
+          if [ "$LATEST" != "$CURRENT" ] || [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      # Only on a real version change: a forced run redeploys the current
-      # PKGBUILD as-is, so it must not clobber a hand-made pkgrel bump.
+      # Only a real upstream version change rewrites pkgver and resets pkgrel
+      # to 1. A forced run or a manual push must NOT touch these — that would
+      # clobber a hand-made pkgrel bump (a repackage of the same upstream).
       - name: Update PKGBUILD version
         if: steps.check.outputs.update == 'true'
         run: |
@@ -52,7 +63,7 @@ jobs:
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
       - name: Update checksums and generate .SRCINFO
-        if: steps.check.outputs.update == 'true' || inputs.force
+        if: steps.check.outputs.deploy == 'true'
         uses: heyhusen/archlinux-package-action@v3.0.0
         with:
           path: .
@@ -61,21 +72,36 @@ jobs:
           namcap: false
           flags: ''
 
-      - name: Commit updated PKGBUILD to GitHub
-        if: steps.check.outputs.update == 'true' || inputs.force
+      - name: Commit and tag
+        id: pkg
+        if: steps.check.outputs.deploy == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          pkgver=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          pkgrel=$(grep '^pkgrel=' PKGBUILD | cut -d= -f2)
+          ver="${pkgver}-${pkgrel}"
+          echo "ver=${ver}" >> "$GITHUB_OUTPUT"
           git add PKGBUILD .SRCINFO
           if git diff --cached --quiet; then
-            echo "::notice::No changes to commit"
+            echo "::notice::No file changes to commit"
           else
-            git commit -m "chore: update to ${{ steps.check.outputs.latest }}"
-            git push
+            git commit -m "chore: package ${ver} [skip ci]"
+            git push origin HEAD:master
+          fi
+          # One immutable tag per packaging (pkgver-pkgrel). Re-runs and forced
+          # redeploys of an already-tagged packaging leave the existing tag be;
+          # git still allows several tags to point at one commit if it comes to that.
+          if git rev-parse -q --verify "refs/tags/${ver}" >/dev/null; then
+            echo "::notice::tag ${ver} already exists, leaving it"
+          else
+            git tag -a "${ver}" -m "release ${ver}"
+            git push origin "${ver}"
+            echo "::notice::tagged ${ver}"
           fi
 
       - name: Deploy to AUR
-        if: steps.check.outputs.update == 'true' || inputs.force
+        if: steps.check.outputs.deploy == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
         with:
           pkgname: garm-bin
@@ -89,6 +115,6 @@ jobs:
           commit_username: ${{ vars.AUR_USERNAME }}
           commit_email: ${{ vars.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ steps.check.outputs.latest }}"
+          commit_message: "Update to ${{ steps.pkg.outputs.ver }}"
           ssh_keyscan_types: rsa,ecdsa,ed25519
           allow_empty_commits: false
